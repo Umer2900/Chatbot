@@ -10,7 +10,7 @@ load_dotenv()
 import streamlit as st
 import uuid
 from datetime import datetime
-from langchain_ollama import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI 
 from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.chat_message_histories import ChatMessageHistory
@@ -58,7 +58,7 @@ if "store" not in st.session_state:
 # ==============================
 @st.cache_resource
 def get_chain():
-    model = ChatOllama(model="gemma:2b")
+    model = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0)
     prompt = ChatPromptTemplate.from_messages([
         ("system", "You are a helpful assistant. ALWAYS use the conversation history to answer questions."),
         MessagesPlaceholder(variable_name="messages"),

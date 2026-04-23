@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 dependencies = [
     "langchain>=1.2.15",
     "langchain-community>=0.4.1",
+    "langchain-google-genai>=4.2.2",
     "langchain-ollama>=1.1.0",
     "langsmith>=0.7.34",
     "python-dotenv>=1.2.2",
