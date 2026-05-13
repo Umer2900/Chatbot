@@ -15,6 +15,8 @@ import os
 from datetime import datetime
 load_dotenv()
 
+
+
 # -------------------
 # 1. LLM
 # -------------------
@@ -39,13 +41,13 @@ llm = ChatOllama(
 def tool_tavily_search(query: str) -> str:
     """Use for current events or general web search."""
     try:
-        from langchain_community.tools.tavily_search import TavilySearchResults
-        search = TavilySearchResults(max_results=3)
+        from langchain_tavily import TavilySearch
+        search = TavilySearch(max_results=3)
         results = search.invoke(query)
         return str(results)[:2000]
+
     except Exception as e:
         return f"Tavily search error: {str(e)}"
-
 
 @tool 
 def tool_wikipedia_search(query: str) -> str:
@@ -66,7 +68,7 @@ def tool_arxiv_search(query: str) -> str:
         from langchain_community.tools import ArxivQueryRun
         from langchain_community.utilities import ArxivAPIWrapper
         arxiv = ArxivQueryRun(api_wrapper=ArxivAPIWrapper(top_k_results=2))
-        return arxiv.run(query)[:3000]
+        return arxiv.run(query)[:2000]
     except Exception as e:
         return f"Arxiv error: {str(e)}"
 
@@ -105,9 +107,24 @@ def chat_node(state: ChatState):
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a helpful, concise, and accurate AI assistant.
-        - Always use conversation history when relevant.
-        - Be clear and to the point.
-        - STRICTLY Do not exceed ~500 tokens per response."""),
+            - **If you simulate tool usage, explicitly state: [Tool: tool_name] before the answer.**
+            - Always use conversation history when relevant.
+            - Be clear and to the point.
+            - STRICTLY limit responses to ~400 tokens.
+
+            Equation Formatting Rules:
+            - Always write math/chemical equations in plain-text Unicode format.
+            - Example:
+                6 CO2 + 6 H2O + light energy -> C6H12O6 + 6 O2
+                sin 3x + cos 3x = sqrt(2) sin 2x
+
+            Tool Usage Rules:
+            - Tools are used internally when required.
+            - Do NOT expose internal tool call mechanics.
+            - You may optionally mention: "I used a tool to compute/search this" AFTER giving the answer.
+            
+        """),
+        
         MessagesPlaceholder(variable_name="messages"),
     ])
 
@@ -143,15 +160,59 @@ graph.add_edge("tools", "chat_node")
 chatbot = graph.compile(checkpointer=checkpointer)
 
 # -------------------
-# 7. Helper
+# Thread Titles & Delete Support
 # -------------------
-def retrieve_all_threads():
-    """Return list of thread IDs"""
+os.makedirs("Database", exist_ok=True)
+
+def init_db():
+    conn = sqlite3.connect("Database/chatbot.db")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS threads (
+            thread_id TEXT PRIMARY KEY,
+            title TEXT DEFAULT 'New Chat',
+            created_at TEXT,
+            updated_at TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def create_thread(thread_id: str, title: str = "New Chat"):
+    conn = sqlite3.connect("Database/chatbot.db")
+    now = datetime.now().isoformat()
+    conn.execute(
+        "INSERT OR REPLACE INTO threads (thread_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (thread_id, title, now, now)
+    )
+    conn.commit()
+    conn.close()
+
+def update_thread_title(thread_id: str, title: str):
+    conn = sqlite3.connect("Database/chatbot.db")
+    conn.execute(
+        "UPDATE threads SET title = ?, updated_at = ? WHERE thread_id = ?",
+        (title, datetime.now().isoformat(), thread_id)
+    )
+    conn.commit()
+    conn.close()
+
+def delete_thread(thread_id: str):
+    conn = sqlite3.connect("Database/chatbot.db")
+    conn.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
+    conn.commit()
+    conn.close()
+    
     try:
-        threads = []
-        for checkpoint in checkpointer.list(None):
-            thread_id = checkpoint.config["configurable"]["thread_id"]
-            threads.append(thread_id)
-        return list(dict.fromkeys(threads))  # Remove duplicates while preserving order
+        checkpointer.delete({"configurable": {"thread_id": thread_id}})
     except:
-        return []
+        pass
+
+def get_all_threads():
+    """Return list of (thread_id, title)"""
+    conn = sqlite3.connect("Database/chatbot.db")
+    cursor = conn.execute("SELECT thread_id, title FROM threads ORDER BY updated_at DESC")
+    threads = cursor.fetchall()
+    conn.close()
+    return threads

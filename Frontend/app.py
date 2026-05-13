@@ -1,9 +1,10 @@
+
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import streamlit as st
-from Backend.main import chatbot, retrieve_all_threads
+from Backend.main import chatbot, get_all_threads, create_thread, update_thread_title, delete_thread
 from langchain_core.messages import HumanMessage, AIMessage
 import uuid
 
@@ -15,14 +16,15 @@ def reset_chat():
     thread_id = generate_thread_id()
     st.session_state["thread_id"] = thread_id
     st.session_state["message_history"] = []
-    if thread_id not in st.session_state["chat_threads"]:
-        st.session_state["chat_threads"].insert(0, thread_id)
+    st.session_state["title_generated"] = False   # ← New flag
+    create_thread(thread_id, "New Chat")
+    st.session_state["chat_threads"] = get_all_threads()
+    st.rerun()
 
 def load_conversation(thread_id):
     try:
         state = chatbot.get_state({"configurable": {"thread_id": thread_id}})
         messages = state.values.get("messages", [])
-        
         display = []
         for msg in messages:
             if isinstance(msg, HumanMessage):
@@ -39,30 +41,43 @@ if "message_history" not in st.session_state:
 
 if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = generate_thread_id()
+    st.session_state["title_generated"] = False
+    create_thread(st.session_state["thread_id"], "New Chat")
 
 if "chat_threads" not in st.session_state:
-    st.session_state["chat_threads"] = retrieve_all_threads()
-
-# Add current thread if not present
-if st.session_state["thread_id"] not in st.session_state["chat_threads"]:
-    st.session_state["chat_threads"].insert(0, st.session_state["thread_id"])
+    st.session_state["chat_threads"] = get_all_threads()
 
 # ============================ Sidebar ============================
 st.sidebar.title("🧠 Chatbot")
 
 if st.sidebar.button("➕ New Chat", use_container_width=True):
     reset_chat()
-    st.rerun()
 
 st.sidebar.header("Conversations")
-for thread_id in st.session_state["chat_threads"][:15]:  # Limit displayed threads
-    if st.sidebar.button(str(thread_id)[:8] + "...", key=thread_id):
-        st.session_state["thread_id"] = thread_id
-        st.session_state["message_history"] = load_conversation(thread_id)
-        st.rerun()
+
+for thread_id, title in st.session_state["chat_threads"]:
+    col1, col2 = st.sidebar.columns([4, 1])
+    with col1:
+        if st.button(title[:40] + "..." if len(title) > 40 else title, 
+                    key=f"load_{thread_id}", use_container_width=True):
+            st.session_state["thread_id"] = thread_id
+            st.session_state["message_history"] = load_conversation(thread_id)
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑", key=f"del_{thread_id}"):
+            delete_thread(thread_id)
+            st.session_state["chat_threads"] = get_all_threads()
+            if st.session_state["thread_id"] == thread_id:
+                reset_chat()
+            else:
+                st.rerun()
 
 # ============================ Main Chat ============================
 st.title("LangGraph Chatbot")
+
+current_title = next((t for tid, t in st.session_state["chat_threads"] if tid == st.session_state["thread_id"]), "New Chat")
+st.subheader(current_title)
 
 # Display chat history
 for message in st.session_state["message_history"]:
@@ -71,12 +86,10 @@ for message in st.session_state["message_history"]:
 
 # User Input
 if user_input := st.chat_input("Type your message..."):
-    # Add user message
     st.session_state["message_history"].append({"role": "user", "content": user_input})
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # Assistant response
     with st.chat_message("assistant"):
         message_placeholder = st.empty()
         full_response = ""
@@ -96,9 +109,31 @@ if user_input := st.chat_input("Type your message..."):
 
         message_placeholder.markdown(full_response)
 
-    # Save assistant response
     st.session_state["message_history"].append({"role": "assistant", "content": full_response})
 
-    # Optional: Auto refresh thread list
-    if st.session_state["thread_id"] not in st.session_state["chat_threads"]:
-        st.session_state["chat_threads"].insert(0, st.session_state["thread_id"])
+    # ==================== AUTO TITLE GENERATION (Only Once) ====================
+    if not st.session_state.get("title_generated", False) and len(st.session_state["message_history"]) >= 2:
+        try:
+            from Backend.main import llm
+            from langchain_core.messages import HumanMessage
+
+            title_prompt = f"""Generate a very short title (3 words max) for this conversation.
+                            Return ONLY the title. No quotes, no explanation.
+
+                            User: {user_input}
+                            Assistant: {full_response[:180]}"""
+
+            new_title = llm.invoke([HumanMessage(content=title_prompt)]).content
+            new_title = new_title.strip().strip('"').strip("'").strip()
+            
+            if len(new_title.split()) > 6:
+                new_title = " ".join(new_title.split()[:6])
+            
+            if 3 < len(new_title) < 45:
+                update_thread_title(st.session_state["thread_id"], new_title)
+                st.session_state["chat_threads"] = get_all_threads()
+                st.session_state["title_generated"] = True
+                st.rerun()                    # Immediate refresh
+        except Exception as e:
+            print("Title generation failed:", str(e))
+            st.session_state["title_generated"] = True  # Prevent repeated attempts
