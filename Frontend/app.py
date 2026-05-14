@@ -1,14 +1,315 @@
+# import sys
+# import os
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+# import time
+# import streamlit as st
+
+# from Backend.main import (
+#     chatbot, get_all_threads, create_thread, update_thread_title,
+#     delete_thread, ingest_pdf, thread_has_document, thread_document_metadata
+# )
+# from langchain_core.messages import HumanMessage, AIMessage
+# import uuid
+
+
+# # ==================================================================
+# #                           Utilities
+# # ===================================================================
+# def generate_thread_id():
+#     return str(uuid.uuid4())
+
+# def reset_chat():
+#     thread_id = generate_thread_id()
+#     st.session_state["thread_id"] = thread_id
+#     st.session_state["message_history"] = []
+#     st.session_state["title_generated"] = False
+#     create_thread(thread_id, "New Chat")
+#     st.session_state["chat_threads"] = get_all_threads()
+#     st.rerun()
+
+# def load_conversation(thread_id):
+#     try:
+#         state = chatbot.get_state({"configurable": {"thread_id": thread_id}})
+#         messages = state.values.get("messages", [])
+#         display = []
+#         for msg in messages:
+#             if isinstance(msg, HumanMessage):
+#                 display.append({"role": "user", "content": msg.content})
+#             elif isinstance(msg, AIMessage) and msg.content:
+#                 display.append({"role": "assistant", "content": msg.content})
+#         return display
+#     except:
+#         return []
+
+# def clean_ai_response(text: str) -> str:
+#     """Clean AI response to prevent unwanted indentation in Streamlit."""
+#     return text.strip().lstrip('\n').lstrip(' ').replace('\n\n\n', '\n\n')
+
+
+# # ==================================================================
+# #                       Session State
+# # ===================================================================
+# if "message_history" not in st.session_state:
+#     st.session_state["message_history"] = []
+
+# if "thread_id" not in st.session_state:
+#     st.session_state["thread_id"] = generate_thread_id()
+#     st.session_state["title_generated"] = False
+#     create_thread(st.session_state["thread_id"], "New Chat")
+
+# if "chat_threads" not in st.session_state:
+#     st.session_state["chat_threads"] = get_all_threads()
+
+# if "render_counter" not in st.session_state:
+#     st.session_state["render_counter"] = 0
+
+
+# # ==================================================================
+# #                              Sidebar
+# # ===================================================================
+# st.sidebar.title("🧠 Chatbot")
+
+# if st.sidebar.button("➕ New Chat", use_container_width=True):
+#     reset_chat()
+
+# thread_id = st.session_state["thread_id"]
+
+
+# # ============================ Document RAG ============================
+# st.sidebar.header("📄 Document RAG")
+
+# uploaded_pdf = st.sidebar.file_uploader("Upload PDF for this chat", type=["pdf"], key="pdf_uploader")
+
+# # Auto process when file is uploaded
+# if uploaded_pdf is not None:
+#     thread_id = st.session_state["thread_id"]
+
+#     # Check if already processed
+#     if not thread_has_document(thread_id) or uploaded_pdf.name not in str(thread_document_metadata(thread_id)):
+#         with st.sidebar.status("📖 Indexing PDF... Please wait", expanded=True) as status:
+#             try:
+#                 summary = ingest_pdf(
+#                     uploaded_pdf.getvalue(),
+#                     thread_id=thread_id,
+#                     filename=uploaded_pdf.name
+#                 )
+#                 status.update(label="✅ PDF Indexed Successfully!", state="complete")
+#                 # st.sidebar.success(f"**{summary['filename']}** loaded ({summary['chunks']} chunks)")
+#             except Exception as e:
+#                 status.update(label="❌ Indexing Failed", state="error")
+#                 st.sidebar.error(f"Error: {str(e)}")
+
+
+# # ============================ Total Conversation ============================
+# st.sidebar.header("Conversations")
+
+# threads_placeholder = st.sidebar.empty()
+
+# def render_threads(animated_title=None):
+#     with threads_placeholder.container():
+#         for tid, title in st.session_state["chat_threads"]:
+#             col1, col2 = st.columns([4, 1])
+
+#             display_title = title
+#             if animated_title and tid == st.session_state["thread_id"]:
+#                 display_title = animated_title
+
+#             with col1:
+#                 if st.button(
+#                     display_title[:40] + "..." if len(display_title) > 40 else display_title,
+#                     key=f"load_{tid}_{st.session_state['render_counter']}",
+#                     use_container_width=True
+#                 ):
+#                     st.session_state["thread_id"] = tid
+#                     st.session_state["message_history"] = load_conversation(tid)
+#                     st.rerun()
+
+#             with col2:
+#                 if st.button(
+#                     "🗑",
+#                     key=f"del_{tid}_{st.session_state['render_counter']}"
+#                 ):
+#                     delete_thread(tid)
+#                     st.session_state["chat_threads"] = get_all_threads()
+#                     if st.session_state["thread_id"] == tid:
+#                         reset_chat()
+#                     else:
+#                         st.rerun()
+
+
+# # Render threads initially
+# render_threads()
+
+
+# # ==================================================================
+# #                              Main Chat
+# # ===================================================================
+# st.title("Multi Utility Chatbot")
+
+# current_title = next(
+#     (t for tid, t in st.session_state["chat_threads"] if tid == st.session_state["thread_id"]),
+#     "New Chat"
+# )
+
+# title_bar = st.empty()
+# title_bar.subheader(current_title)
+
+# # Display chat history
+# for message in st.session_state["message_history"]:
+#     with st.chat_message(message["role"]):
+#         st.markdown(message["content"])
+
+# # User Input
+# if user_input := st.chat_input("Type your message..."):
+
+#     st.session_state["message_history"].append({"role": "user", "content": user_input})
+
+#     with st.chat_message("user"):
+#         st.markdown(user_input)
+
+#     with st.chat_message("assistant"):
+#         message_placeholder = st.empty()
+#         full_response = ""
+#         previous_text = ""
+
+#         CONFIG = {"configurable": {"thread_id": st.session_state["thread_id"]}}
+
+#         input_state = {
+#             "messages": [HumanMessage(content=user_input)],
+#             "thread_id": st.session_state["thread_id"]
+#         }
+
+#         for event in chatbot.stream(input_state, config=CONFIG, stream_mode="values"):
+#             if "messages" in event:
+#                 last_message = event["messages"][-1]
+
+#                 if isinstance(last_message, AIMessage) and last_message.content:
+#                     new_text = last_message.content
+
+#                     diff = new_text[len(previous_text):]
+#                     previous_text = new_text
+
+#                     for ch in diff:
+#                         full_response += ch
+#                         message_placeholder.markdown(full_response + "▌")
+#                         time.sleep(0.01)
+
+#         message_placeholder.markdown(full_response)
+
+#     st.session_state["message_history"].append({"role": "assistant", "content": full_response})
+
+
+    # # ==================== AUTO TITLE GENERATION ====================
+
+    # if not st.session_state.get("title_generated", False) and len(st.session_state["message_history"]) >= 2:
+    #     try:
+    #         from Backend.main import llm
+
+    #         title_prompt = f"""Generate a very short title (3 words max) for this conversation.
+    #                         Return ONLY the title. No quotes, no explanation.
+
+    #                         User: {user_input}
+    #                         Assistant: {full_response[:180]}"""
+
+    #         streamed_title = ""
+
+    #         for chunk in llm.stream([HumanMessage(content=title_prompt)]):
+    #             if chunk.content:
+    #                 for ch in chunk.content:
+    #                     streamed_title += ch
+
+    #                     # update top title
+    #                     title_bar.subheader(streamed_title + "▌")
+
+    #                     # IMPORTANT: update counter each render (unique keys)
+    #                     st.session_state["render_counter"] += 1
+    #                     render_threads(animated_title=streamed_title + "▌")
+
+    #                     time.sleep(0.03)
+
+    #         streamed_title = streamed_title.strip().strip('"').strip("'").strip()
+
+    #         if len(streamed_title.split()) > 6:
+    #             streamed_title = " ".join(streamed_title.split()[:6])
+
+    #         title_bar.subheader(streamed_title)
+
+    #         update_thread_title(st.session_state["thread_id"], streamed_title)
+    #         st.session_state["chat_threads"] = get_all_threads()
+    #         st.session_state["title_generated"] = True
+
+    #         time.sleep(0.4)
+    #         st.rerun()
+
+    #     except Exception as e:
+    #         print("Title generation failed:", str(e))
+    #         st.session_state["title_generated"] = True
+
+
 
 import sys
 import os
+import time
+import streamlit as st
+from datetime import datetime
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import streamlit as st
-from Backend.main import chatbot, get_all_threads, create_thread, update_thread_title, delete_thread
+from Backend.main import (
+    chatbot, get_all_threads, create_thread, update_thread_title,
+    delete_thread, ingest_pdf, thread_has_document, thread_document_metadata
+)
 from langchain_core.messages import HumanMessage, AIMessage
 import uuid
 
-# =========================== Utilities ===========================
+# ====================== PAGE CONFIG ======================
+st.set_page_config(
+    page_title="CorpAI • Enterprise Assistant",
+    page_icon="💼",
+    layout="centered",
+    # layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ====================== CUSTOM CORPORATE CSS ======================
+st.markdown("""
+<style>
+    .main {
+        background-color: #0E1117;
+        color: #FAFAFA;
+    }
+    .stChatMessage {
+        border-radius: 12px;
+        padding: 14px 18px;
+    }
+    .user-message {
+        background-color: #1E88E5 !important;
+        color: white;
+    }
+    .assistant-message {
+        background-color: #26334A !important;
+    }
+    .sidebar .stButton button {
+        border-radius: 8px;
+        padding: 8px 16px;
+    }
+    .chat-container {
+        background-color: #161B26;
+        border-radius: 12px;
+        padding: 20px;
+    }
+    h1, h2, h3 {
+        font-family: 'Segoe UI', sans-serif;
+    }
+    .stMarkdown h1 {
+        color: #4FC3F7;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+
+# ====================== UTILITIES ======================
 def generate_thread_id():
     return str(uuid.uuid4())
 
@@ -16,7 +317,7 @@ def reset_chat():
     thread_id = generate_thread_id()
     st.session_state["thread_id"] = thread_id
     st.session_state["message_history"] = []
-    st.session_state["title_generated"] = False   # ← New flag
+    st.session_state["title_generated"] = False
     create_thread(thread_id, "New Chat")
     st.session_state["chat_threads"] = get_all_threads()
     st.rerun()
@@ -35,87 +336,141 @@ def load_conversation(thread_id):
     except:
         return []
 
-# ======================= Session State =======================
+
+# ====================== SESSION STATE ======================
 if "message_history" not in st.session_state:
     st.session_state["message_history"] = []
-
 if "thread_id" not in st.session_state:
     st.session_state["thread_id"] = generate_thread_id()
     st.session_state["title_generated"] = False
     create_thread(st.session_state["thread_id"], "New Chat")
-
 if "chat_threads" not in st.session_state:
     st.session_state["chat_threads"] = get_all_threads()
+if "render_counter" not in st.session_state:
+    st.session_state["render_counter"] = 0
 
-# ============================ Sidebar ============================
-st.sidebar.title("🧠 Chatbot")
+# ====================== SIDEBAR ======================
+with st.sidebar:
+    st.markdown("# 💼 Multi Utility Chatbot")
+    st.divider()
 
-if st.sidebar.button("➕ New Chat", use_container_width=True):
-    reset_chat()
+    if st.button("➕ New Conversation", use_container_width=True, type="primary"):
+        reset_chat()
 
-st.sidebar.header("Conversations")
+    st.divider()
 
-for thread_id, title in st.session_state["chat_threads"]:
-    col1, col2 = st.sidebar.columns([4, 1])
-    with col1:
-        if st.button(title[:40] + "..." if len(title) > 40 else title, 
-                    key=f"load_{thread_id}", use_container_width=True):
-            st.session_state["thread_id"] = thread_id
-            st.session_state["message_history"] = load_conversation(thread_id)
-            st.rerun()
-    
-    with col2:
-        if st.button("🗑", key=f"del_{thread_id}"):
-            delete_thread(thread_id)
-            st.session_state["chat_threads"] = get_all_threads()
-            if st.session_state["thread_id"] == thread_id:
-                reset_chat()
-            else:
-                st.rerun()
+    # Document RAG Section
+    st.subheader("📄 Document Analysis")
+    uploaded_pdf = st.file_uploader("Upload PDF", type=["pdf"], key="pdf_uploader", label_visibility="collapsed")
 
-# ============================ Main Chat ============================
-st.title("LangGraph Chatbot")
+    if uploaded_pdf is not None:
+        thread_id = st.session_state["thread_id"]
+        if not thread_has_document(thread_id) or uploaded_pdf.name not in str(thread_document_metadata(thread_id)):
+            # with st.status("🔄 Indexing document...", expanded=True) as status:
+            #     try:
+            #         summary = ingest_pdf(uploaded_pdf.getvalue(), thread_id, uploaded_pdf.name)
+            #         print("✅ Document Indexed Successfully")
+            #         status.update(label="✅ Document Indexed Successfully", state="complete")
+            #         st.success(f"**{summary['filename']}** loaded")
+            #     except Exception as e:
+            #         status.update(label="❌ Failed", state="error")
+            #         st.error(str(e))
+            try:
+                summary = ingest_pdf(uploaded_pdf.getvalue(), thread_id, uploaded_pdf.name)
+                print("✅ Document Indexed Successfully")
+            except Exception as e:
+                st.error(str(e))
 
-current_title = next((t for tid, t in st.session_state["chat_threads"] if tid == st.session_state["thread_id"]), "New Chat")
-st.subheader(current_title)
 
-# Display chat history
-for message in st.session_state["message_history"]:
-    with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+    st.divider()
+
+    # Conversations
+    st.subheader("📂 Recent Conversations")
+    threads_placeholder = st.empty()
+
+    def render_threads(animated_title=None):
+        with threads_placeholder.container():
+            for tid, title in st.session_state["chat_threads"]:
+                col1, col2 = st.columns([4.5, 0.8])
+                with col1:
+                    display_title = animated_title if (animated_title and tid == st.session_state["thread_id"]) else title
+                    if st.button(
+                        display_title[:45] + "..." if len(display_title) > 45 else display_title,
+                        key=f"load_{tid}_{st.session_state['render_counter']}",
+                        use_container_width=True
+                    ):
+                        st.session_state["thread_id"] = tid
+                        st.session_state["message_history"] = load_conversation(tid)
+                        st.rerun()
+                with col2:
+                    if st.button("🗑", key=f"del_{tid}_{st.session_state['render_counter']}"):
+                        delete_thread(tid)
+                        st.session_state["chat_threads"] = get_all_threads()
+                        if st.session_state["thread_id"] == tid:
+                            reset_chat()
+                        else:
+                            st.rerun()
+
+    render_threads()
+
+# ====================== MAIN DASHBOARD ======================
+
+st.title("Multi Utility Chatbot")
+
+# Current Chat Title
+current_title = next((t for tid, t in st.session_state["chat_threads"] if tid == st.session_state["thread_id"]),"New Conversation")
+
+title_bar = st.empty()
+title_bar.subheader(f"📍 {current_title}")
+
+# Chat Container
+chat_container = st.container()
+with chat_container:
+    for message in st.session_state["message_history"]:
+        with st.chat_message(message["role"], avatar="🧑‍💼" if message["role"] == "user" else "🤖"):
+            st.markdown(message["content"])
 
 # User Input
-if user_input := st.chat_input("Type your message..."):
+if user_input := st.chat_input("Ask anything..."):
     st.session_state["message_history"].append({"role": "user", "content": user_input})
-    with st.chat_message("user"):
+
+    with st.chat_message("user", avatar="🧑‍💼"):
         st.markdown(user_input)
 
-    with st.chat_message("assistant"):
+    with st.chat_message("assistant", avatar="🤖"):
         message_placeholder = st.empty()
         full_response = ""
+        previous_text = ""
 
         CONFIG = {"configurable": {"thread_id": st.session_state["thread_id"]}}
+        input_state = {
+            "messages": [HumanMessage(content=user_input)],
+            "thread_id": st.session_state["thread_id"]
+        }
 
-        for event in chatbot.stream(
-            {"messages": [HumanMessage(content=user_input)]},
-            config=CONFIG,
-            stream_mode="values"
-        ):
+        for event in chatbot.stream(input_state, config=CONFIG, stream_mode="values"):
             if "messages" in event:
                 last_message = event["messages"][-1]
                 if isinstance(last_message, AIMessage) and last_message.content:
-                    full_response = last_message.content
-                    message_placeholder.markdown(full_response + "▌")
+                    new_text = last_message.content
+                    diff = new_text[len(previous_text):]
+                    previous_text = new_text
+
+                    for ch in diff:
+                        full_response += ch
+                        message_placeholder.markdown(full_response + "▌")
+                        time.sleep(0.01)
 
         message_placeholder.markdown(full_response)
 
     st.session_state["message_history"].append({"role": "assistant", "content": full_response})
 
-    # ==================== AUTO TITLE GENERATION (Only Once) ====================
+
+    # ==================== AUTO TITLE GENERATION ====================
+
     if not st.session_state.get("title_generated", False) and len(st.session_state["message_history"]) >= 2:
         try:
             from Backend.main import llm
-            from langchain_core.messages import HumanMessage
 
             title_prompt = f"""Generate a very short title (3 words max) for this conversation.
                             Return ONLY the title. No quotes, no explanation.
@@ -123,17 +478,37 @@ if user_input := st.chat_input("Type your message..."):
                             User: {user_input}
                             Assistant: {full_response[:180]}"""
 
-            new_title = llm.invoke([HumanMessage(content=title_prompt)]).content
-            new_title = new_title.strip().strip('"').strip("'").strip()
-            
-            if len(new_title.split()) > 6:
-                new_title = " ".join(new_title.split()[:6])
-            
-            if 3 < len(new_title) < 45:
-                update_thread_title(st.session_state["thread_id"], new_title)
-                st.session_state["chat_threads"] = get_all_threads()
-                st.session_state["title_generated"] = True
-                st.rerun()                    # Immediate refresh
+            streamed_title = ""
+
+            for chunk in llm.stream([HumanMessage(content=title_prompt)]):
+                if chunk.content:
+                    for ch in chunk.content:
+                        streamed_title += ch
+
+                        # update top title
+                        title_bar.subheader(streamed_title + "▌")
+
+                        # IMPORTANT: update counter each render (unique keys)
+                        st.session_state["render_counter"] += 1
+                        render_threads(animated_title=streamed_title + "▌")
+
+                        time.sleep(0.03)
+
+            streamed_title = streamed_title.strip().strip('"').strip("'").strip()
+
+            if len(streamed_title.split()) > 6:
+                streamed_title = " ".join(streamed_title.split()[:6])
+
+            title_bar.subheader(streamed_title)
+
+            update_thread_title(st.session_state["thread_id"], streamed_title)
+            st.session_state["chat_threads"] = get_all_threads()
+            st.session_state["title_generated"] = True
+
+            time.sleep(0.4)
+            st.rerun()
+
         except Exception as e:
             print("Title generation failed:", str(e))
-            st.session_state["title_generated"] = True  # Prevent repeated attempts
+            st.session_state["title_generated"] = True
+
