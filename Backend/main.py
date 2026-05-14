@@ -1,7 +1,7 @@
 from langchain_ollama import ChatOllama
 from langgraph.graph import StateGraph, START, END
 from typing import TypedDict, Annotated, Any, Dict, Optional
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
+from langchain_core.messages import BaseMessage
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -22,7 +22,6 @@ from langchain_community.document_loaders import PyPDFLoader
 from langchain_community.vectorstores import FAISS
 from langchain_ollama import OllamaEmbeddings 
 
-
 # -------------------
 # 1. LLM + Embeddings
 # -------------------
@@ -40,7 +39,7 @@ llm = ChatOllama(
 embeddings = OllamaEmbeddings(model="nomic-embed-text")
 
 # -------------------
-# RAG Storage
+# RAG Storage (Per Thread)
 # -------------------
 _THREAD_RETRIEVERS: Dict[str, Any] = {}
 _THREAD_METADATA: Dict[str, dict] = {}
@@ -49,6 +48,7 @@ def _get_retriever(thread_id: str):
     return _THREAD_RETRIEVERS.get(str(thread_id))
 
 def ingest_pdf(file_bytes: bytes, thread_id: str, filename: Optional[str] = None) -> dict:
+    """Ingest PDF and create retriever for the specific thread."""
     if not file_bytes:
         raise ValueError("No file content received.")
 
@@ -84,10 +84,8 @@ def ingest_pdf(file_bytes: bytes, thread_id: str, filename: Optional[str] = None
 # 2. Tools
 # -------------------
 @tool
-def rag_tool(query: str) -> str:
+def rag_tool(query: str, thread_id: Optional[str] = None) -> str:
     """Retrieve relevant information from the PDF document uploaded in this chat thread."""
-    thread_id = globals().get("thread_id")
-    
     if not thread_id:
         return "Error: Could not determine current chat thread."
 
@@ -99,8 +97,9 @@ def rag_tool(query: str) -> str:
     context = "\n\n".join([doc.page_content[:750] for doc in docs])
     filename = _THREAD_METADATA.get(str(thread_id), {}).get("filename", "PDF")
 
-    return f"""Relevant information from the uploaded document '{filename}': {context}
-            he user's question using the context above.""".strip()
+    return f"""Relevant information from the uploaded document '{filename}':
+            {context}
+            Answer the user's question using the context above."""
 
 
 @tool
@@ -108,14 +107,10 @@ def tool_tavily_search(query: str) -> str:
     """Search the web for current events and general information."""
     try:
         from langchain_tavily import TavilySearch
-
         search = TavilySearch(max_results=3)
         return str(search.invoke(query))[:2000]
-
     except Exception as e:
         return f"Tavily error: {str(e)}"    
-
-
 
 @tool 
 def tool_wikipedia_search(query: str) -> str:
@@ -161,24 +156,19 @@ llm_with_tools = llm.bind_tools(tools)
 
 
 # -------------------
-# 3. Updated State
+# 3. State
 # -------------------
 class ChatState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
-    thread_id: str  
+    thread_id: str
 
 
 # -------------------
 # 4. Nodes
 # -------------------
 def chat_node(state: ChatState):
-    thread_id = state.get("thread_id")
-    # print(f"[DEBUG] chat_node called with thread_id: {thread_id}")   # Debugging
-
-    # Make thread_id available to rag_tool 
-    globals()["thread_id"] = thread_id   # Temporary but works
-
     messages = state["messages"][-12:]
+    thread_id = state.get("thread_id")
 
     prompt = ChatPromptTemplate.from_messages([
         ("system", f"""You are a helpful, concise, and accurate AI assistant.
@@ -230,7 +220,7 @@ def get_checkpointer():
 checkpointer = get_checkpointer()
 
 # -------------------
-# Graph
+# 6. Graph
 # -------------------
 graph = StateGraph(ChatState)
 graph.add_node("chat_node", chat_node)
@@ -244,25 +234,18 @@ chatbot = graph.compile(checkpointer=checkpointer)
 
 
 # -------------------
-# 8. Helpers
+# 7. Helpers
 # -------------------
-
 def thread_has_document(thread_id: str) -> bool:
     return str(thread_id) in _THREAD_RETRIEVERS
-
 
 def thread_document_metadata(thread_id: str) -> dict:
     return _THREAD_METADATA.get(str(thread_id), {})
 
 
-
-
-
 # ------------------------------
 # Thread Titles & Delete Support
 # ------------------------------
-os.makedirs("Database", exist_ok=True)
-
 def init_db():
     conn = sqlite3.connect("Database/chatbot.db")
     conn.execute("""
@@ -302,7 +285,6 @@ def delete_thread(thread_id: str):
     conn.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
     conn.commit()
     conn.close()
-    
     try:
         checkpointer.delete({"configurable": {"thread_id": thread_id}})
     except:
