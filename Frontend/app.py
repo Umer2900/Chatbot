@@ -116,15 +116,6 @@ with st.sidebar:
     if uploaded_pdf is not None:
         thread_id = st.session_state["thread_id"]
         if not thread_has_document(thread_id) or uploaded_pdf.name not in str(thread_document_metadata(thread_id)):
-            # with st.status("🔄 Indexing document...", expanded=True) as status:
-            #     try:
-            #         summary = ingest_pdf(uploaded_pdf.getvalue(), thread_id, uploaded_pdf.name)
-            #         print("✅ Document Indexed Successfully")
-            #         status.update(label="✅ Document Indexed Successfully", state="complete")
-            #         st.success(f"**{summary['filename']}** loaded")
-            #     except Exception as e:
-            #         status.update(label="❌ Failed", state="error")
-            #         st.error(str(e))
             try:
                 summary = ingest_pdf(uploaded_pdf.getvalue(), thread_id, uploaded_pdf.name)
                 print("✅ Document Indexed Successfully")
