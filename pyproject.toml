@@ -8,6 +8,7 @@ dependencies = [
     "aiosqlite>=0.22.1",
     "arxiv>=3.0.0",
     "faiss-cpu>=1.13.2",
+    "fastapi>=0.136.1",
     "ipykernel>=7.2.0",
     "langchain>=1.2.18",
     "langchain-community>=0.4.1",
@@ -19,7 +20,9 @@ dependencies = [
     "langgraph>=1.1.10",
     "langgraph-checkpoint-sqlite>=3.1.0",
     "pypdf>=6.11.0",
+    "python-multipart>=0.0.28",
     "streamlit>=1.57.0",
     "tavily-python>=0.7.24",
+    "uvicorn>=0.46.0",
     "wikipedia>=1.4.0",
 ]
