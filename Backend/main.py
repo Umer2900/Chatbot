@@ -1,299 +1,215 @@
-from langchain_ollama import ChatOllama
-from langgraph.graph import StateGraph, START, END
-from typing import TypedDict, Annotated, Any, Dict, Optional
-from langchain_core.messages import BaseMessage
-from langgraph.checkpoint.sqlite import SqliteSaver
-from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode, tools_condition
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.tools import tool
-from dotenv import load_dotenv
-import sqlite3
-import requests
-import os
-from datetime import datetime
-import tempfile
+"""
+Backend/
+├── main.py                 # FastAPI App (Entry Point)
+├── config.py               # Configuration & Settings
+├── database.py             # Database & Thread Management
+├── llm.py                  # LLM Used
+├── llm_graph.py            # Graph, Chat Logic
+├── rag.py                  # RAG Logic (PDF Ingestion + Retriever)
+├── tools.py                # All Tools
+└── models.py               # Pydantic Models    
+"""
 
-load_dotenv()
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage, AIMessage
+import uuid
+import traceback
 
-# ------------------- RAG Imports -------------------
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader
-from langchain_community.vectorstores import FAISS
-from langchain_ollama import OllamaEmbeddings 
+# Import from sibling modules (absolute import)
+from .models import ChatRequest
+from .database import init_db, create_thread, get_all_threads, delete_thread, get_async_checkpointer, update_thread_title
+from .rag import ingest_pdf
+from .llm_graph import graph   
+from .llm import llm
 
-# -------------------
-# 1. LLM + Embeddings
-# -------------------
-llm = ChatOllama( 
-    model="gpt-oss:20b",  
-    base_url="https://ollama.com", 
-    client_kwargs={ 
-        "headers": { 
-            "Authorization": f"Bearer {os.environ.get('OLLAMA_API_KEY')}" 
-        } 
-    }, 
-    temperature=0.3, 
-)  
+from contextlib import asynccontextmanager
+chatbot = None    # Global chatbot variable
 
-embeddings = OllamaEmbeddings(model="nomic-embed-text")
-
-# -------------------
-# RAG Storage (Per Thread)
-# -------------------
-_THREAD_RETRIEVERS: Dict[str, Any] = {}
-_THREAD_METADATA: Dict[str, dict] = {}
-
-def _get_retriever(thread_id: str):
-    return _THREAD_RETRIEVERS.get(str(thread_id))
-
-def ingest_pdf(file_bytes: bytes, thread_id: str, filename: Optional[str] = None) -> dict:
-    """Ingest PDF and create retriever for the specific thread."""
-    if not file_bytes:
-        raise ValueError("No file content received.")
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as temp_file:
-        temp_file.write(file_bytes)
-        temp_path = temp_file.name
-
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global chatbot
+    checkpointer = await get_async_checkpointer()
+    chatbot = graph.compile(checkpointer=checkpointer)
+    print("✅ Chatbot initialized with AsyncSqliteSaver")
     try:
-        loader = PyPDFLoader(temp_path)
-        docs = loader.load()
-        splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-        chunks = splitter.split_documents(docs)
-
-        vector_store = FAISS.from_documents(chunks, embeddings)
-        retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
-
-        thread_id_str = str(thread_id)
-        _THREAD_RETRIEVERS[thread_id_str] = retriever
-        _THREAD_METADATA[thread_id_str] = {
-            "filename": filename or "Uploaded PDF",
-            "documents": len(docs),
-            "chunks": len(chunks),
-        }
-        return _THREAD_METADATA[thread_id_str]
+        yield
     finally:
-        try:
-            os.remove(temp_path)
-        except:
-            pass
+        print("Shutting down...")
 
+app = FastAPI(title="Chatbot API", version="1.0", lifespan=lifespan)
 
-# -------------------
-# 2. Tools
-# -------------------
-@tool
-def rag_tool(query: str, thread_id: Optional[str] = None) -> str:
-    """Retrieve relevant information from the PDF document uploaded in this chat thread."""
-    if not thread_id:
-        return "Error: Could not determine current chat thread."
-
-    retriever = _get_retriever(thread_id)
-    if retriever is None:
-        return "No document has been uploaded for this chat. Please upload a PDF first."
-
-    docs = retriever.invoke(query)
-    context = "\n\n".join([doc.page_content[:750] for doc in docs])
-    filename = _THREAD_METADATA.get(str(thread_id), {}).get("filename", "PDF")
-
-    return f"""Relevant information from the uploaded document '{filename}':
-            {context}
-            Answer the user's question using the context above."""
-
-
-@tool
-def tool_tavily_search(query: str) -> str:
-    """Search the web for current events and general information."""
-    try:
-        from langchain_tavily import TavilySearch
-        search = TavilySearch(max_results=3)
-        return str(search.invoke(query))[:2000]
-    except Exception as e:
-        return f"Tavily error: {str(e)}"    
-
-@tool 
-def tool_wikipedia_search(query: str) -> str:
-    """Search Wikipedia for factual information about people, places, or concepts."""
-    try:
-        from langchain_community.tools import WikipediaQueryRun
-        from langchain_community.utilities import WikipediaAPIWrapper
-        wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
-        return wikipedia.invoke(query)
-    except Exception as e:
-        return f"Wikipedia error: {str(e)}"
-
-
-@tool
-def tool_arxiv_search(query: str) -> str:
-    """Search for scientific papers and research on Arxiv."""
-    try:
-        from langchain_community.tools import ArxivQueryRun
-        from langchain_community.utilities import ArxivAPIWrapper
-        arxiv = ArxivQueryRun(api_wrapper=ArxivAPIWrapper(top_k_results=2))
-        return arxiv.run(query)[:2000]
-    except Exception as e:
-        return f"Arxiv error: {str(e)}"
-
-
-@tool
-def get_stock_price(symbol: str) -> str:
-    """Fetch the latest stock price for a given symbol using Alpha Vantage."""
-    try:
-        api_key = os.getenv("ALPHAVANTAGE_API_KEY")
-        if not api_key:
-            return "Alpha Vantage API key not found."
-        url = f"https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol={symbol}&apikey={api_key}"
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        return str(response.json())
-    except Exception as e:
-        return f"Stock price error: {str(e)}"
-
-
-tools = [tool_tavily_search, tool_wikipedia_search, tool_arxiv_search, get_stock_price, rag_tool]
-llm_with_tools = llm.bind_tools(tools)
-
-
-# -------------------
-# 3. State
-# -------------------
-class ChatState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-    thread_id: str
-
-
-# -------------------
-# 4. Nodes
-# -------------------
-def chat_node(state: ChatState):
-    messages = state["messages"][-12:]
-    thread_id = state.get("thread_id")
-
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", f"""You are a helpful, concise, and accurate AI assistant.
-            - **If you simulate tool usage, explicitly state: [Tool: tool_name] before the answer.**
-            - Always use conversation history when relevant.
-            - Be clear and to the point.
-            - STRICTLY limit responses to ~400 tokens.
-
-            **Equation Formatting Rules:**
-            - Always write math/chemical equations in plain-text Unicode format.
-            - Example:
-                6 CO2 + 6 H2O + light energy -> C6H12O6 + 6 O2
-                sin 3x + cos 3x = sqrt(2) sin 2x
-
-            **Tool Usage Rules:**
-            - Tools are used internally when required.
-            - Do NOT expose internal tool call mechanics.
-            - You may optionally mention: "I used a tool to compute/search this" AFTER giving the answer.
-            
-            **RAG Rules:**
-            - If the user asks anything about the uploaded document, PDF, file, summary, or its content → **must use** the `rag_tool`.
-            - Never answer from general knowledge when asked about the document.
-         
-            Current thread_id: {thread_id}
-        """),
-        MessagesPlaceholder(variable_name="messages"),
-    ])
-
-    chain = prompt | llm_with_tools
-    response = chain.invoke({"messages": messages})
-    
-    if response.tool_calls:
-        print(f"[DEBUG] Tools called: {[t['name'] for t in response.tool_calls]}")
-    
-    return {"messages": [response], "thread_id": thread_id}
-
-
-tool_node = ToolNode(tools)
-
-# -------------------
-# 5. Checkpointer
-# -------------------
-os.makedirs("Database", exist_ok=True)
-
-def get_checkpointer():
-    conn = sqlite3.connect("Database/chatbot.db", check_same_thread=False)
-    return SqliteSaver(conn)
-
-checkpointer = get_checkpointer()
-
-# -------------------
-# 6. Graph
-# -------------------
-graph = StateGraph(ChatState)
-graph.add_node("chat_node", chat_node)
-graph.add_node("tools", tool_node)
-
-graph.add_edge(START, "chat_node")
-graph.add_conditional_edges("chat_node", tools_condition, {"tools": "tools", END: END})
-graph.add_edge("tools", "chat_node")
-
-chatbot = graph.compile(checkpointer=checkpointer)
-
-
-# -------------------
-# 7. Helpers
-# -------------------
-def thread_has_document(thread_id: str) -> bool:
-    return str(thread_id) in _THREAD_RETRIEVERS
-
-def thread_document_metadata(thread_id: str) -> dict:
-    return _THREAD_METADATA.get(str(thread_id), {})
-
-
-# ------------------------------
-# Thread Titles & Delete Support
-# ------------------------------
-def init_db():
-    conn = sqlite3.connect("Database/chatbot.db")
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS threads (
-            thread_id TEXT PRIMARY KEY,
-            title TEXT DEFAULT 'New Chat',
-            created_at TEXT,
-            updated_at TEXT
-        )
-    """)
-    conn.commit()
-    conn.close()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 init_db()
 
-def create_thread(thread_id: str, title: str = "New Chat"):
-    conn = sqlite3.connect("Database/chatbot.db")
-    now = datetime.now().isoformat()
-    conn.execute(
-        "INSERT OR REPLACE INTO threads (thread_id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
-        (thread_id, title, now, now)
-    )
-    conn.commit()
-    conn.close()
+# ====================== ENDPOINTS ======================
 
-def update_thread_title(thread_id: str, title: str):
-    conn = sqlite3.connect("Database/chatbot.db")
-    conn.execute(
-        "UPDATE threads SET title = ?, updated_at = ? WHERE thread_id = ?",
-        (title, datetime.now().isoformat(), thread_id)
-    )
-    conn.commit()
-    conn.close()
+@app.post("/chat")
+async def chat(request: ChatRequest):
 
-def delete_thread(thread_id: str):
-    conn = sqlite3.connect("Database/chatbot.db")
-    conn.execute("DELETE FROM threads WHERE thread_id = ?", (thread_id,))
-    conn.commit()
-    conn.close()
+    thread_id = request.thread_id or str(uuid.uuid4())
+
+    input_state = {
+        "messages": [HumanMessage(content=request.message)],
+        "thread_id": thread_id
+    }
+
     try:
-        checkpointer.delete({"configurable": {"thread_id": thread_id}})
-    except:
-        pass
 
-def get_all_threads():
-    """Return list of (thread_id, title)"""
-    conn = sqlite3.connect("Database/chatbot.db")
-    cursor = conn.execute("SELECT thread_id, title FROM threads ORDER BY updated_at DESC")
-    threads = cursor.fetchall()
-    conn.close()
-    return threads
+        result = await chatbot.ainvoke(
+            input_state,
+            config={"configurable": {"thread_id": thread_id}},
+        )
+
+        # Get final assistant message
+        messages = result.get("messages", [])
+
+        final_response = ""
+
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage):
+                final_response = msg.content
+                break
+
+        return {
+            "response": final_response,
+            "thread_id": thread_id
+        }
+
+    except Exception as e:
+        traceback.print_exc()
+
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
+
+
+@app.post("/generate-title")
+async def generate_title(request: ChatRequest):
+
+    async def title_stream():
+
+        try:
+
+            title_prompt = f"""
+                        Generate a very short, meaningful title (maximum 3 words).
+                        Return ONLY the title.
+
+                        User: {request.message}
+                        """
+
+            title = ""
+
+            for chunk in llm.stream(
+                [HumanMessage(content=title_prompt)]
+            ):
+
+                if chunk.content:
+
+                    title += chunk.content
+
+                    yield f"data: {chunk.content}\n\n"
+
+            final_title = title.strip().strip('"').strip("'")[:50]
+
+            update_thread_title(
+                request.thread_id,
+                final_title
+            )
+
+            yield f"data: __FINAL__:{final_title}\n\n"
+
+        except Exception:
+            yield "data: __FINAL__:New Conversation\n\n"
+
+    return StreamingResponse(
+        title_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+        }
+    )
+
+
+@app.post("/upload-pdf/{thread_id}")
+async def upload_pdf(thread_id: str, file: UploadFile = File(...)):
+    try:
+        content = await file.read()
+        summary = ingest_pdf(content, thread_id, file.filename)
+        return {"status": "success", "summary": summary}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/threads")
+async def list_threads():
+    return get_all_threads()
+
+@app.post("/threads")
+async def new_thread(request: dict):
+    thread_id = request.get("thread_id", str(uuid.uuid4()))
+    create_thread(thread_id)
+    return {"thread_id": thread_id, "title": "New Chat"}
+
+@app.delete("/threads/{thread_id}")
+async def delete_thread_api(thread_id: str):
+    delete_thread(thread_id)
+    return {"status": "success"}
+
+@app.get("/messages/{thread_id}")
+async def get_messages(thread_id: str):
+    """Get full conversation history for a thread"""
+    try:
+        state = await chatbot.aget_state(
+            config={"configurable": {"thread_id": thread_id}}
+        )
+        messages = []
+        for msg in state.values.get("messages", []):
+            if isinstance(msg, HumanMessage):
+                messages.append({
+                    "role": "user",
+                    "content": msg.content
+                })
+            elif isinstance(msg, AIMessage) and msg.content:
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.content
+                })
+        return messages
+
+    except Exception as e:
+        print(f"Error loading messages for {thread_id}: {e}")
+        return []
+
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("Backend.main:app", host="0.0.0.0", port=8000, reload=True)
+    
+
+
+
+
+"""
+cd Backend
+pip install fastapi uvicorn python-multipart
+uvicorn main:app --reload --port 8000
+
+OR
+
+uvicorn Backend.main:app --reload --port 8000
+
+OR
+
+uvicorn Backend.main:app --port 8000
+"""
