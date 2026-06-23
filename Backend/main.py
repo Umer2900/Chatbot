@@ -201,6 +201,9 @@ if __name__ == "__main__":
 
 
 """
+
+(Powershell)
+
 cd Backend
 pip install fastapi uvicorn python-multipart
 uvicorn main:app --reload --port 8000
@@ -212,4 +215,10 @@ uvicorn Backend.main:app --reload --port 8000
 OR
 
 uvicorn Backend.main:app --port 8000
+
+OR
+
+uv run python -m uvicorn Backend.main:app --reload --reload-dir Backend --port 8000
+
+
 """

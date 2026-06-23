@@ -11,7 +11,7 @@ BACKEND_URL = "http://127.0.0.1:8000"   # Change this for production
 
 # ====================== PAGE CONFIG ======================
 st.set_page_config(
-    page_title="CorpAI • Enterprise Assistant",
+    page_title="RAGent Chatbot • Enterprise Assistant",
     page_icon="💼",
     layout="centered",
     initial_sidebar_state="expanded"
@@ -75,7 +75,7 @@ if "chat_threads" not in st.session_state:
 
 # ====================== SIDEBAR ======================
 with st.sidebar:
-    st.markdown("# 💼 Multi Utility Chatbot")
+    st.markdown("# RAGent Chatbot")
     st.divider()
 
     if st.button("➕ New Conversation", use_container_width=True, type="primary"):
@@ -120,7 +120,7 @@ with st.sidebar:
                     st.rerun() 
 
 # ====================== MAIN CHAT ======================
-st.title("Multi Utility Chatbot")
+st.title("RAGent Chatbot")
 
 current_title = next((t for tid, t in st.session_state.get("chat_threads", []) 
                      if tid == st.session_state["thread_id"]), "New Conversation")
@@ -236,12 +236,23 @@ if user_input := st.chat_input("Ask anything..."):
             st.session_state["title_generated"] = True
 
 
+
+# (Powershell)
+
 # cd Frontend
 # streamlit run app.py
 
-    # OR
+#     OR
 
 # streamlit run Frontend/app.py
+
+#     OR 
+# uv run python -m streamlit run Frontend/app.py
+
+
+
+
+
 
 
 

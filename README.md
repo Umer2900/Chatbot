@@ -1,4 +1,4 @@
-# 🤖 ChatThread AI
+# 🤖 RAGent Chatbot
 
 **Multi-Utility AI Chatbot with LangGraph, FastAPI, Streamlit, RAG, Tool Calling, and Threaded Conversations**
 
